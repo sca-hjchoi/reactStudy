@@ -1,0 +1,232 @@
+# UI Components & Theming
+
+The project uses [shadcn/ui](https://ui.shadcn.com/) (new-york style) with [Tailwind CSS v4](https://tailwindcss.com/) for styling. Shared components live in `packages/ui/` and are imported as `@repo/ui`.
+
+## Where Components Live
+
+There are two homes for components, and the split matters:
+
+|  | `packages/ui/components/` | `apps/app/components/` |
+| --- | --- | --- |
+| What | shadcn/ui primitives – `Button`, `Card` | Product parts – `AuthForm`, `UserMenu` |
+| Knows about | React, Radix, and styling utilities | Routes, queries, session, product rules |
+| Maintained by | The shadcn CLI (`bun ui:add`) | You |
+| Imported from | `@repo/ui` | `@/components/...` |
+
+A component belongs in `packages/ui` only if it would still make sense in a different app. Anything that reaches for a route, a query, or the session belongs in `apps/app/components`.
+
+## Adding Components
+
+```bash
+bun ui:add button              # Add a single component
+bun ui:add dialog card select  # Add several at once
+bun ui:add --all               # Add everything in the registry
+bun ui:essentials              # Add a curated starter set
+bun ui:list                    # List what's installed
+bun ui:update                  # Re-fetch installed components from the registry
+```
+
+Adding a component writes the file and formats it with Prettier. It does **not** touch the barrel export, so add that line yourself:
+
+```ts
+// packages/ui/index.ts
+export * from "./components/toggle-group";
+```
+
+Without it, `import { ToggleGroup } from "@repo/ui"` won't resolve.
+
+::: warning
+
+Review what the CLI generates `bun ui:update` overwrites files in place, so local edits are lost – check `git diff` before committing. Registry output isn't uniform either: some components still emit `Context.Provider` and `useContext`, which this project's ESLint config rejects in favour of the React 19 forms (`<Context>` and `use()`).
+
+:::
+
+## Package Structure
+
+```bash
+packages/ui/
+├── components/           # One file per component
+│   ├── button.tsx
+│   ├── card.tsx
+│   └── ...
+├── hooks/
+├── lib/
+│   └── utils.ts          # cn() utility
+├── scripts/              # CLI tooling (add, list, update, essentials)
+├── components.json       # shadcn CLI config – style, aliases, icon library
+├── styles.css            # Exists for the shadcn CLI; real styles live in the app
+├── index.ts              # Barrel export
+└── package.json
+```
+
+Components import `cn` as `@/lib/utils`, which is what the shadcn CLI generates. That alias resolves through the _consuming_ app's config rather than this package's, and it works only because every app keeps a `lib/utils` re-export shim. One component importing another must therefore use a relative path (`./toggle`) – the CLI's `@/components/…` form resolves into the app and fails the build there.
+
+Components and `cn` are re-exported from the package root, so apps import from a single place:
+
+```tsx
+import { Button, Card, CardHeader, CardTitle, Input, cn } from "@repo/ui";
+```
+
+## Using Components
+
+```tsx
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@repo/ui";
+import type { ReactNode } from "react";
+
+type FeatureCardProps = {
+  title: string;
+  description: string;
+  children: ReactNode;
+};
+
+export function FeatureCard({
+  title,
+  description,
+  children,
+}: FeatureCardProps) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{title}</CardTitle>
+        <CardDescription>{description}</CardDescription>
+      </CardHeader>
+      <CardContent>{children}</CardContent>
+    </Card>
+  );
+}
+```
+
+## The `cn()` Utility
+
+Use `cn()` (from `clsx` + `tailwind-merge`) for conditional and merged class names:
+
+```tsx
+import { Button, cn } from "@repo/ui";
+
+export function SaveButton({ isActive }: { isActive: boolean }) {
+  return (
+    <Button
+      className={cn(
+        "transition-colors",
+        isActive && "bg-primary text-primary-foreground",
+      )}
+    >
+      Save
+    </Button>
+  );
+}
+```
+
+`tailwind-merge` resolves conflicts – later classes win, so `cn("p-4", "p-6")` produces `"p-6"`. That is what lets a `className` passed in from outside override a component's own defaults instead of fighting it on specificity.
+
+## Theming
+
+### CSS Variables
+
+Theme colors are defined as CSS custom properties using the [OKLCH](https://developer.mozilla.org/en-US/docs/Web/CSS/color_value/oklch) color space. Each app owns its own set — `apps/app/styles/globals.css` is shown here, and `apps/web` keeps a matching copy for the marketing site:
+
+```css
+:root {
+  --radius: 0.625rem;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  /* ... */
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  /* ... */
+}
+```
+
+`apps/app/tailwind.config.css` maps these to Tailwind utilities via `@theme inline`, so `bg-primary`, `text-muted-foreground`, and the rest resolve to the variables automatically. To restyle the app, change the variables – every utility that references them follows.
+
+Most tokens come in pairs: `--primary` is the surface, `--primary-foreground` is the text drawn on it. Change one and check the other still reads against it, and make the matching edit in both the `:root` and `.dark` blocks – a color that passes contrast on white rarely does on near-black.
+
+### Dark Mode
+
+Dark mode uses a custom Tailwind variant keyed on the `dark` class:
+
+```css
+/* apps/app/tailwind.config.css */
+@custom-variant dark (&:is(.dark *));
+```
+
+`apps/app/lib/theme.tsx` owns that class. The user picks a `preference` – `light`, `dark`, or `system` – and the app renders the resolved `theme`, which is only ever `light` or `dark`:
+
+```tsx
+import { useTheme } from "@/lib/theme";
+
+function ThemeButton() {
+  const { theme, preference, setPreference } = useTheme();
+
+  return (
+    <button onClick={() => setPreference(theme === "dark" ? "light" : "dark")}>
+      {preference === "system" ? `System (${theme})` : preference}
+    </button>
+  );
+}
+```
+
+The preference and the resolved theme are backed by Jotai atoms rather than a bespoke React context, so `theme` stays a derived value instead of state somebody has to keep in step. The atoms are private – `useTheme()` is the only way app code reads or sets the theme, and it resolves against the `StoreProvider` at the root of `index.tsx` like every other atom in the app.
+
+The preference is persisted to `localStorage` and synced across tabs by [`atomWithStorage`](https://jotai.org/docs/utilities/storage). `<ThemeSync />`, mounted in `apps/app/index.tsx`, mirrors the resolved theme onto `<html>`: the `dark` class, the `color-scheme` property (so scrollbars and native form controls match), and `<meta name="theme-color">` for mobile browser chrome, read from the `--theme-color` variable in `globals.css`.
+
+An inline script in `apps/app/index.html` settles all three before first paint – without it, dark-mode users would see a white flash while the bundle loads. It duplicates a few lines of resolution logic on purpose, and it has to hardcode the two theme colors because no stylesheet is parsed that early. Its storage key and JSON encoding must match `theme.tsx`; its colors must match `--theme-color` in `globals.css`, as must `theme_color` in `public/site.manifest`.
+
+The switcher itself is a `ToggleGroup` – single-select toggle groups already carry radio semantics and arrow-key navigation, so there is no keyboard handling to maintain by hand.
+
+## Tailwind Content Scanning
+
+Tailwind v4 finds classes by scanning the files listed with `@source`. Both the app and the shared package have to be listed, or classes used only inside `packages/ui` are dropped from the production build:
+
+```css
+/* apps/app/tailwind.config.css */
+@import "tailwindcss";
+
+@source "./lib/**/*.{js,ts,jsx,tsx}";
+@source "./routes/**/*.{js,ts,jsx,tsx}";
+@source "./components/**/*.{js,ts,jsx,tsx}";
+@source "./index.html";
+@source "./index.tsx";
+@source "../../packages/ui/components/**/*.{ts,tsx}";
+@source "../../packages/ui/lib/**/*.{ts,tsx}";
+@source "../../packages/ui/hooks/**/*.{ts,tsx}";
+```
+
+Scanning is textual, so Tailwind only sees complete class names. `bg-red-500` is found; `` `bg-${color}-500` `` is not – map to whole class strings instead.
+
+## Troubleshooting
+
+**Import from `@repo/ui` fails.** Check the component is installed (`bun ui:list`) and exported from `packages/ui/index.ts` – `bun ui:add` does not add the export for you.
+
+**Styles missing in the built app but fine in dev.** The class lives in a file no `@source` covers, or it is assembled by string interpolation. See [Tailwind Content Scanning](#tailwind-content-scanning).
+
+**Nothing is styled at all.** `apps/app/index.tsx` must import `./styles/globals.css`.
+
+**TypeScript can't resolve `@repo/ui`.** The consuming app needs both the path alias and the project reference in its `tsconfig.json`:
+
+```json
+{
+  "compilerOptions": {
+    "paths": { "@repo/ui": ["../../packages/ui"] }
+  },
+  "references": [{ "path": "../../packages/ui" }]
+}
+```
+
+## Resources
+
+- [shadcn/ui Components](https://ui.shadcn.com/docs/components)
+- [Radix UI Primitives](https://www.radix-ui.com)
+- [Tailwind CSS v4](https://tailwindcss.com)
